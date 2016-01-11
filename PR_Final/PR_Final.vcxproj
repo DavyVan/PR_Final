@@ -19,7 +19,11 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="hog.cpp" />
     <ClCompile Include="main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="hog.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{40AC50E4-2610-4D60-83D0-F28F8EA60F12}</ProjectGuid>

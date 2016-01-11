@@ -10,17 +10,31 @@
 #include <strsafe.h>
 #include<ctime>
 #include<vector>
+#include<process.h>
 #pragma comment(lib, "User32.lib")
+#include"hog.h"
 
 #define WChar2Char(lpWideCharStr,cbWideChar,lpMultiByteStr,cbMultiByte) \
-	WideCharToMultiByte(CP_ACP,0,lpWideCharStr,cbWideChar,lpMultiByteStr,cbMultiByte,NULL,NULL)\
+	WideCharToMultiByte(CP_ACP,0,lpWideCharStr,cbWideChar,lpMultiByteStr,cbMultiByte,NULL,NULL)
 
 #define INPUT_NUM 1764//输入层节点数
 //#define INPUT_NUM 36
 #define HIDE_NUM 125//隐含层节点数
 #define OUTPUT_NUM 1//输出层节点数
 
+#define HOG_BLOCK_SIZE 2	//HOG中block的大小，每个方向包含多少个cell，正方形
+#define HOG_BLOCK_STRIDE_SIZE 8		//HOG中block移动的步长，一般与cell大小相同
+#define HOG_CELL_SIZE 8		//HOG中cell的大小，像素为单位，正方形
+#define HOG_BIN_NUM 9		//HOG中梯度方向个数，即bin的个数
+#define PI 3.14159265359
 #define WIN_STEP 20//滑动窗口步长
+
+//程序开关
+
+//#define CALC_FEATURE	//是否执行特征向量计算步骤，计算的特征向量会保存在文件中，不能与训练阶段一趟进行
+#define TRAINING		//是否执行训练阶段，该阶段消耗大量时间，因为变量声明问题，不能与计算特征向量一趟进行
+//#define TESTING			//是否执行测试阶段，请确保完成执行前面两个阶段之后在打开此开关
+#define USE_MULTITHREAD	//是否开启多线程（CPU），用于更快的识别目标图片,5831ms/3223ms,Sp=1.8
 
 using namespace std;
 using namespace cv;
@@ -53,6 +67,23 @@ typedef struct Node//存储特征向量的链表节点
 	int value;
 	struct Node* next;
 }LNode;
+
+#ifdef USE_MULTITHREAD
+typedef struct threadParams		//调用多线程时传参用的结构体
+{
+	int i;		//线程编号，用于跟踪处理进度
+	int min_height;
+	int min_width;
+	int height_growth;
+	int width_growth;
+	int win_step;
+	Mat_<uchar> *img_gray;
+	N_Network *net;
+	vector<Match_Rect> *match_list;
+	HANDLE *match_list_mutex;
+};
+#endif
+
 
 void LBP(Mat_<uchar> img, Mat_<uchar> &result, int x, int y)//计算一个像素点的LBP值
 {
@@ -193,6 +224,7 @@ void Calculate_LBP(Mat_<uchar> img, unsigned char map[], LNode *head, double vec
 
 void Init_Network(N_Network *net)//初始化神经网络
 {
+	srand((int) time(0));
 	net->alpha=0.8;
 	net->beta=0.3;
 	for(int j=0; j<HIDE_NUM; j++)
@@ -319,9 +351,11 @@ void Find_Rectangle(Mat_<Vec3b> img, vector<Rect_Area> &rect_list)//寻找已经标记
 		<<rect_list[i].br_r<<", "<<rect_list[i].tl_c<<") ("<<rect_list[i].br_r<<", "<<rect_list[i].br_c<<")"<<endl;
 	
 }
+#define USE_CV_HOG
 
 void Calculate_HOG(Mat_<uchar> img, double hog_vector[])//计算图像的HOG特征向量
 {
+#ifdef USE_CV_HOG
 	HOGDescriptor *hog=new HOGDescriptor(Size(64, 64), Size(16, 16), Size(8, 8), Size(8, 8), 9);
 	vector<float> descriptors;//结果数组
 
@@ -329,6 +363,24 @@ void Calculate_HOG(Mat_<uchar> img, double hog_vector[])//计算图像的HOG特征向量
 	//cout<<"HOG dims: "<<descriptors.size()<<endl;
 	for(int i=0; i<descriptors.size(); i++)
 		hog_vector[i]=descriptors[i];
+#else
+	Mat t_img = Flattening(img);
+	int cell_cols = t_img.cols / CELL_SIZE[0] + 1;
+	int cell_rows = t_img.rows / CELL_SIZE[1] + 1;
+
+	vector<vector<vector<double>>> dest_hog_vec;
+
+	InitVector(dest_hog_vec, cell_cols, cell_rows, GRADIENT_SIZE);
+	CalcHOG(img, CELL_SIZE, BLOCK_SIZE, GRADIENT_SIZE, dest_hog_vec);
+
+	int idx = 0;
+	for (int j = 0; j < dest_hog_vec.size(); j++) {
+		for (int i = 0; i < dest_hog_vec[j].size(); i++) {
+			for (int k = 0; k < GRADIENT_SIZE; k++)
+				hog_vector[idx++] = dest_hog_vec[i][j][k];
+		}
+	}
+#endif
 }
 
 void Init_Black(Mat_<uchar> &img)//将图像初始化为黑色
@@ -431,7 +483,58 @@ double Detect_Best(Mat_<uchar> img, vector<Mat_<uchar>> sample_list)//识别图片中
 	return max_rate;
 }
 
-//double pos_data[50000][INPUT_NUM], neg_data[50000][INPUT_NUM];
+#ifdef USE_MULTITHREAD
+unsigned int __stdcall Recognize_Multithread(PVOID params)
+{
+	threadParams *_params = (threadParams*) params;
+	int i = _params->i;
+	int min_height = _params->min_height;
+	int min_width = _params->min_width;
+	int height_growth = _params->height_growth;
+	int width_growth = _params->width_growth;
+	int win_step = _params->win_step;
+	Mat_<uchar> *img_gray = _params->img_gray;
+	N_Network *net = _params->net;
+	vector<Match_Rect> *match_list = _params->match_list;
+	HANDLE *match_list_mutex = _params->match_list_mutex;
+
+	//cout << "Process: " << (double) i / 5 * 100 << "\%" << endl;
+	int win_height = min_height + i*height_growth;
+	int win_width = min_width + i*width_growth;
+	for (int j = 0; (win_height + j*win_step)<img_gray->rows; j++)
+	{
+		for (int k = 0; (win_width + k*win_step)<img_gray->cols; k++)
+		{
+			Rect rect(k*win_step, j*win_step, win_width, win_height);
+			Mat_<uchar> temp(win_height, win_width);
+			//Mat_<Vec3b> temp(win_height, win_width);
+			double input[INPUT_NUM] = { 0 }, output[OUTPUT_NUM] = { 0 };
+			Match_Rect match;
+
+			Copy_Image(*img_gray, rect, temp);
+			//resize(temp, temp, Size(48, 96));
+			//Calculate_LBP(temp, map, head, input);
+			resize(temp, temp, Size(64, 64));
+			Calculate_HOG(temp, input);
+			Predict(net, input, output);
+			if (output[0]>0.75)
+			{
+				match.img = temp.clone();
+				match.rect = rect;
+				match.match_rate = output[0];
+
+				WaitForSingleObject(*match_list_mutex, INFINITE);
+				match_list->push_back(match);
+				ReleaseMutex(*match_list_mutex);
+			}
+		}
+	}
+	printf("Thread No.%d/6 completed!\n", i+1);
+	return 0;
+}
+#endif
+
+double pos_data[50000][INPUT_NUM], neg_data[50000][INPUT_NUM];
 
 int main()
 {
@@ -445,12 +548,13 @@ int main()
 	
 	head=Get_Map(map);
 
+#ifdef CALC_FEATURE
 	/////////////计算训练样本的特征向量//////////////
-	//FILE *pos_fp=fopen("G:\\新建文件夹\\模式识别\\模式识别大作业\\LBP_Vector\\pos_lbp_3.txt", "w");
-	//FILE *neg_fp=fopen("G:\\新建文件夹\\模式识别\\模式识别大作业\\LBP_Vector\\neg_lbp_3.txt", "w");
-	/*
+	FILE *pos_fp=fopen("C:\\Users\\FanQuan\\Desktop\\pos_hog_3.txt", "w");
+	FILE *neg_fp=fopen("C:\\Users\\FanQuan\\Desktop\\neg_hog_3.txt", "w");
+	
 	WIN32_FIND_DATA ffd;
-	HANDLE hFind=FindFirstFile(TEXT("G:\\新建文件夹\\模式识别\\模式识别大作业\\new_train_3\\*"), &ffd);
+	HANDLE hFind=FindFirstFile(TEXT("C:\\Users\\FanQuan\\Desktop\\new_train\\*"), &ffd);
 	char flag='0';
 	char filename[1024], path[1024];
 	//读取文件夹下的所有文件
@@ -468,7 +572,7 @@ int main()
 				continue;
 			WChar2Char(ffd.cFileName, -1, filename, 256);
 			//cout<<filename<<endl;
-			sprintf(path, "G:/新建文件夹/模式识别/模式识别大作业/new_train_3/%s", filename);
+			sprintf(path, "C:/Users/FanQuan/Desktop/new_train/%s", filename);
 			//cout<<path<<" "<<endl;
 
 			// 读入图片   
@@ -481,8 +585,8 @@ int main()
 				cout<<"Image read error!"<<endl;
 				continue;
 			}
-			resize(img, img, Size(48, 96));
-			//resize(img, img, Size(64, 64));
+			//resize(img, img, Size(48, 96));
+			resize(img, img, Size(64, 64));
 
 			char data[1000];
 			if(flag=='0')
@@ -517,12 +621,12 @@ int main()
 	fclose(pos_fp);
 	fclose(neg_fp);
 	cout<<pos_num<<"\t"<<neg_num<<endl;
-	*/
+#endif
 	
-	/*
+#ifdef TRAINING
 	///////////////////训练神经网络分类器/////////////////////
-	FILE *pos_fp=fopen("G:\\新建文件夹\\模式识别\\模式识别大作业\\HOG_Vector\\pos_hog.txt", "r");
-	FILE *neg_fp=fopen("G:\\新建文件夹\\模式识别\\模式识别大作业\\HOG_Vector\\neg_hog.txt", "r");
+	FILE *pos_fp=fopen("C:\\Users\\FanQuan\\Desktop\\pos_hog_3.txt", "r");
+	FILE *neg_fp=fopen("C:\\Users\\FanQuan\\Desktop\\neg_hog_3.txt", "r");
 	char str[100000];
 	
 	while(!feof(pos_fp))
@@ -573,7 +677,7 @@ int main()
 	cout<<"开始训练"<<endl;
 	start=clock();
 	Init_Network(net);//初始化网络
-	while(sum_error>1e-2 && count<15000)
+	while(sum_error>1e-2 && count<150000)
 	{
 		sum_error=0;
 
@@ -593,11 +697,13 @@ int main()
 	cout<<"迭代次数: "<<count<<endl;
 	cout<<"训练时间: "<<(double)(finish-start)/CLOCKS_PER_SEC<<"s"<<endl;
 	
-	FILE* net_fp=fopen("G:\\新建文件夹\\模式识别\\模式识别大作业\\Network\\network_hog.bin", "wb");//保存训练好的神经网络分类器
+	FILE* net_fp=fopen("C:\\Users\\FanQuan\\Desktop\\network_hog_3.bin", "wb");//保存训练好的神经网络分类器
 	fwrite(net, sizeof(N_Network), 1, net_fp);
 	fclose(net_fp);
-	*/
+	
+#endif
 
+#ifdef TESTING
 	////////////////////计算已标记图像中ground truth的坐标位置//////////////////////
 	Mat_<Vec3b> img_source[3];
 	vector<Rect_Area> rect_list[3];
@@ -676,7 +782,7 @@ int main()
 	
 	///////////////////////////使用分类器对目标图像进行目标图像识别////////////////////////
 	N_Network *net=(N_Network*)malloc(sizeof(N_Network));
-	FILE* net_fp=fopen("C:\\Users\\FanQuan\\Desktop\\network_hog.bin", "rb");//读入训练好的神经网络分类器
+	FILE* net_fp=fopen("C:\\Users\\FanQuan\\Desktop\\network_hog_3.bin", "rb");//读入训练好的神经网络分类器
 
 	fread(net, sizeof(N_Network), 1, net_fp);
 	fclose(net_fp);
@@ -700,9 +806,11 @@ int main()
 	int win_height=min_height, win_width=min_width;
 	int win_step=WIN_STEP;
 	//以不同尺度的窗口遍历整张图像，并将窗口中图像计算特征向量，然后送入分类器
+#ifndef USE_MULTITHREAD
+	start = clock();
 	for(int i=0; i<=5; i++)
 	{
-		cout<<"Process: "<<(double)i/5*100<<"\%"<<endl;
+		//cout<<"Process: "<<(double)i/5*100<<"\%"<<endl;
 		win_height=min_height+i*height_growth;
 		win_width=min_width+i*width_growth;
 		for(int j=0; (win_height+j*win_step)<img_gray.rows; j++)
@@ -730,7 +838,40 @@ int main()
 				}
 			}
 		}
+		cout<<"Process: "<<(double)(i+1)/6*100<<"\%"<<endl;
 	}
+	finish = clock();
+	cout << "串行识别时间：" << finish - start << "ms" << endl;
+#else
+	start = clock();
+
+	threadParams params;
+	params.min_height = min_height;
+	params.min_width = min_width;
+	params.height_growth = height_growth;
+	params.width_growth = width_growth;
+	params.win_step = win_step;
+	params.img_gray = &img_gray;
+	params.net = net;
+	params.match_list = &match_list;
+	HANDLE match_list_mutex = CreateMutex(NULL, FALSE, NULL);
+	params.match_list_mutex = &match_list_mutex;
+
+	HANDLE threads[6];
+	threadParams _params[6];
+	for (int i = 0; i <= 5; i++)
+	{
+		memcpy(&_params[i], &params, sizeof(threadParams));
+		_params[i].i = i;
+		threads[i] = (HANDLE) _beginthreadex(NULL, 0, Recognize_Multithread, (PVOID) &_params[i], 0, NULL);
+	}
+
+	WaitForMultipleObjects(6, threads, TRUE, INFINITE);
+	CloseHandle(match_list_mutex);
+
+	finish = clock();
+	cout << "并行识别时间：" << finish - start << "ms" << endl;
+#endif
 
 	////////////////////////////筛选分类器识别的行人框中最佳的矩形框///////////////////////////
 	Mat_<Vec3b> result=img_rgb.clone();
@@ -739,8 +880,8 @@ int main()
 	start=clock();
 	for(int i=0; i<match_list.size(); i++)
 	{
-		double rate=Detect_Best(match_list[i].img, sample_list);
-		if(rate>0.6)//判断矩形框中图像是否为最佳行人图像
+		//double rate=Detect_Best(match_list[i].img, sample_list);
+		//if(rate>0.6)//判断矩形框中图像是否为最佳行人图像
 		{
 			int sign=0;
 			//match_list[i].match_rate=rate;
@@ -767,7 +908,8 @@ int main()
 	namedWindow("Result");
 	imshow("Result", result);
 	waitKey(0);
-	
+#endif
 	system("pause");
+
 	return 0;
 }
