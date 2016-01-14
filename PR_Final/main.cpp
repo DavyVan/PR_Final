@@ -31,9 +31,9 @@
 
 //程序开关
 
-//#define CALC_FEATURE	//是否执行特征向量计算步骤，计算的特征向量会保存在文件中，不能与训练阶段一趟进行
-#define TRAINING		//是否执行训练阶段，该阶段消耗大量时间，因为变量声明问题，不能与计算特征向量一趟进行
-//#define TESTING			//是否执行测试阶段，请确保完成执行前面两个阶段之后在打开此开关
+//#define CALC_FEATURE	//是否执行特征向量计算步骤，计算的特征向量会保存在文件中，不能与下面两个阶段一趟进行
+//#define TRAINING		//是否执行训练阶段，该阶段消耗大量时间，因为变量声明问题，不能CALC_FEATURE与TESTING阶段一趟进行
+#define TESTING			//是否执行测试阶段，请确保完成执行前面两个阶段之后再打开此开关，且不能与上面两个阶段一趟进行
 #define USE_MULTITHREAD	//是否开启多线程（CPU），用于更快的识别目标图片,5831ms/3223ms,Sp=1.8
 
 using namespace std;
