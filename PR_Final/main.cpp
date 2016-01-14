@@ -782,7 +782,7 @@ int main()
 	
 	///////////////////////////使用分类器对目标图像进行目标图像识别////////////////////////
 	N_Network *net=(N_Network*)malloc(sizeof(N_Network));
-	FILE* net_fp=fopen("C:\\Users\\FanQuan\\Desktop\\network_hog_3.bin", "rb");//读入训练好的神经网络分类器
+	FILE* net_fp=fopen("C:\\Users\\FanQuan\\Desktop\\network_hog.bin", "rb");//读入训练好的神经网络分类器
 
 	fread(net, sizeof(N_Network), 1, net_fp);
 	fclose(net_fp);
@@ -880,8 +880,8 @@ int main()
 	start=clock();
 	for(int i=0; i<match_list.size(); i++)
 	{
-		//double rate=Detect_Best(match_list[i].img, sample_list);
-		//if(rate>0.6)//判断矩形框中图像是否为最佳行人图像
+		double rate=Detect_Best(match_list[i].img, sample_list);
+		if(rate>0.6)//判断矩形框中图像是否为最佳行人图像
 		{
 			int sign=0;
 			//match_list[i].match_rate=rate;
