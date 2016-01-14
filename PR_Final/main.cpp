@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS 1
 #include<iostream>
 #include<cstdlib>
 #include<cmath>
@@ -710,9 +711,9 @@ int main()
 	int min_height=-1, min_width=-1, max_height=-1, max_width=-1;
 	int height_growth=0, width_growth=0;
 	//已标记好ground truth的图像
-	img_source[0]=imread("E:/学习相关/模式识别/模式识别大作业/PRtest_1.png");
-	img_source[1]=imread("E:/学习相关/模式识别/模式识别大作业/PRtest_2.png");
-	img_source[2]=imread("E:/学习相关/模式识别/模式识别大作业/PRtest_3.png");
+	img_source[0]=imread("../../PRtest_1.png");
+	img_source[1]=imread("../../PRtest_2.png");
+	img_source[2]=imread("../../PRtest_3.png");
 
 	for(int i=0; i<3; i++)
 	{
@@ -745,7 +746,7 @@ int main()
 	///////////////////////读取正样本作为相似度标准模板//////////////////////
 	vector<Mat_<uchar>> sample_list;
 	WIN32_FIND_DATA ffd;
-	HANDLE hFind=FindFirstFile(TEXT("C:\\Users\\FanQuan\\Desktop\\pos_data\\*"), &ffd);
+	HANDLE hFind=FindFirstFile(TEXT("..\\..\\pos_data\\*"), &ffd);
 	char flag='0';
 	char filename[1024], path[1024];
 
@@ -757,7 +758,7 @@ int main()
 		{
 			WChar2Char(ffd.cFileName, -1, filename, 256);
 			//cout<<filename<<endl;
-			sprintf(path, "C:/Users/FanQuan/Desktop/pos_data/%s", filename);
+			sprintf(path, "../../pos_data/%s", filename);
 			//cout<<path<<" "<<endl;
 			if(!strcmp(filename, ".") || !strcmp(filename, ".."))
 				continue;
@@ -782,12 +783,12 @@ int main()
 	
 	///////////////////////////使用分类器对目标图像进行目标图像识别////////////////////////
 	N_Network *net=(N_Network*)malloc(sizeof(N_Network));
-	FILE* net_fp=fopen("C:\\Users\\FanQuan\\Desktop\\network_hog.bin", "rb");//读入训练好的神经网络分类器
+	FILE* net_fp=fopen("..\\..\\network_hog.bin", "rb");//读入训练好的神经网络分类器
 
 	fread(net, sizeof(N_Network), 1, net_fp);
 	fclose(net_fp);
 
-	Mat_<Vec3b> img_rgb=imread("E:/学习相关/模式识别/模式识别大作业/PR_origin_3.png");//待识别图像的地址
+	Mat_<Vec3b> img_rgb=imread("../../PR_origin_1.png");//待识别图像的地址
 	Mat_<uchar> img_gray(img_rgb.rows, img_rgb.cols);
 	int max_gray=0;
 	vector<Match_Rect> match_list;
@@ -904,7 +905,7 @@ int main()
 	for(int i=0; i<reco_list.size(); i++)
 		rectangle(result, reco_list[i].rect, Scalar(0, 0, 255), 1);
 		
-	imwrite("E:/学习相关/模式识别/模式识别大作业/PR_result_1.png", result);
+	imwrite("../../PR_result_1.png", result);
 	namedWindow("Result");
 	imshow("Result", result);
 	waitKey(0);
